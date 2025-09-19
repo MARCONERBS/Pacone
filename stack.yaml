@@ -1,0 +1,160 @@
+version: "3.9"
+
+services:
+  ## --------------------------- TRAEFIK --------------------------- ##
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker.swarmMode=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencryptresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencryptresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencryptresolver.acme.email=${EMAIL_ADMIN}"
+      - "--certificatesresolvers.letsencryptresolver.acme.storage=/certificates/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - volume_swarm_certificates:/certificates
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - network_public
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  ## --------------------------- PORTAINER --------------------------- ##
+  portainer:
+    image: portainer/portainer-ce:latest
+    volumes:
+      - portainer_data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - network_public
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.portainer.rule=Host(`${DOMAIN_PORTAINER}`)
+        - traefik.http.routers.portainer.entrypoints=websecure
+        - traefik.http.routers.portainer.tls.certresolver=letsencryptresolver
+        - traefik.http.services.portainer.loadbalancer.server.port=9000
+
+  ## --------------------------- POSTGRES --------------------------- ##
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - network_public
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  ## --------------------------- REDIS --------------------------- ##
+  redis:
+    image: redis:7
+    volumes:
+      - redis_data:/data
+    networks:
+      - network_public
+
+  ## --------------------------- CHATWOOT --------------------------- ##
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DATABASE=chatwoot
+      - REDIS_URL=redis://redis:6379/1
+      - SECRET_KEY_BASE=${CHATWOOT_SECRET_KEY}
+      - RAILS_ENV=production
+    volumes:
+      - chatwoot_data:/app/storage
+      - chatwoot_public:/app/public
+    networks:
+      - network_public
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.chatwoot.rule=Host(`${DOMAIN_CHATWOOT}`)
+        - traefik.http.routers.chatwoot.entrypoints=websecure
+        - traefik.http.routers.chatwoot.tls.certresolver=letsencryptresolver
+        - traefik.http.services.chatwoot.loadbalancer.server.port=3000
+
+  ## --------------------------- EVOLUTION API --------------------------- ##
+  evolution_v2:
+    image: atendai/evolution-api:v2.2.1
+    volumes:
+      - evolution_instancesv2:/evolution/instances
+    networks:
+      - network_public
+    environment:
+      - SERVER_URL=https://${DOMAIN_EVOLUTION}
+      - AUTHENTICATION_TYPE=apikey
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/evolution
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379/2
+      - LANGUAGE=pt-BR
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.evolution.rule=Host(`${DOMAIN_EVOLUTION}`)
+        - traefik.http.routers.evolution.entrypoints=websecure
+        - traefik.http.routers.evolution.tls.certresolver=letsencryptresolver
+        - traefik.http.services.evolution.loadbalancer.server.port=8080
+
+  ## --------------------------- N8N --------------------------- ##
+  n8n:
+    image: n8nio/n8n:latest
+    command: start
+    volumes:
+      - n8n:/home/node/.n8n
+    networks:
+      - network_public
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8ndb
+      - DB_POSTGRESDB_USER=postgres
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_HOST=${DOMAIN_N8N}
+      - N8N_EDITOR_BASE_URL=https://${DOMAIN_N8N}/
+      - WEBHOOK_URL=https://${DOMAIN_N8N}/
+      - N8N_PROTOCOL=https
+      - NODE_ENV=production
+      - GENERIC_TIMEZONE=America/Sao_Paulo
+      - TZ=America/Sao_Paulo
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.n8n.rule=Host(`${DOMAIN_N8N}`)
+        - traefik.http.routers.n8n.entrypoints=websecure
+        - traefik.http.routers.n8n.tls.certresolver=letsencryptresolver
+        - traefik.http.services.n8n.loadbalancer.server.port=5678
+
+volumes:
+  volume_swarm_certificates:
+  portainer_data:
+  postgres_data:
+  redis_data:
+  chatwoot_data:
+  chatwoot_public:
+  evolution_instancesv2:
+  n8n:
+
+networks:
+  network_public:
+    external: true
